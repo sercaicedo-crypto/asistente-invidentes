@@ -7,7 +7,6 @@ import os
 
 app = FastAPI()
 
-# Configuración de seguridad para que funcione en cualquier celular
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,30 +14,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 1. CARGA DE DATOS ---
+# --- 1. CARGA DE DATOS ROBUSTA ---
+# Usamos Graph() para que sea de doble vía (ida y vuelta)
 edificio = nx.Graph()
 nombres_lugares = []
 
-# Intentamos leer el Excel. En Render, el archivo está en la misma carpeta.
+print("--- INICIANDO CARGA DE MAPA ---")
+
 try:
     if os.path.exists("rutas.xlsx"):
         df_rutas = pd.read_excel("rutas.xlsx")
         
-        # Limpieza de nombres
-        df_rutas['origen'] = df_rutas['origen'].astype(str).str.strip()
-        df_rutas['destino'] = df_rutas['destino'].astype(str).str.strip()
+        # TRUCO DE MAGIA: Convertimos todo a minúsculas y quitamos espacios
+        df_rutas['origen'] = df_rutas['origen'].astype(str).str.strip().str.lower()
+        df_rutas['destino'] = df_rutas['destino'].astype(str).str.strip().str.lower()
 
         for index, fila in df_rutas.iterrows():
             peligro = fila['advertencia'] if not pd.isna(fila['advertencia']) else "Ninguna"
+            
+            # Agregamos la conexión
             edificio.add_edge(fila['origen'], fila['destino'], 
                               instruccion=fila['instruccion'], 
                               alerta=peligro)
             
+            # Guardamos nombres para el buscador
             if fila['origen'] not in nombres_lugares: nombres_lugares.append(fila['origen'])
             if fila['destino'] not in nombres_lugares: nombres_lugares.append(fila['destino'])
-        print("✅ Base de datos cargada.")
+            
+            # IMPRIMIMOS LA CONEXIÓN (Para verla en los logs)
+            print(f"🔗 Conectado: '{fila['origen']}' <--> '{fila['destino']}'")
+
+        print(f"✅ MAPA LISTO. Total de lugares: {len(nombres_lugares)}")
+        print(f"📍 Lugares detectados: {nombres_lugares}")
     else:
-        print("⚠️ No encontré rutas.xlsx")
+        print("⚠️ ERROR CRÍTICO: No encontré rutas.xlsx")
 except Exception as e:
     print(f"❌ Error leyendo Excel: {e}")
 
@@ -47,48 +56,71 @@ def encontrar_lugares_mencionados(frase):
     frase = frase.lower()
     lugares_encontrados = []
     for lugar in nombres_lugares:
-        if lugar.lower() in frase:
+        # Buscamos coincidencias exactas o parciales
+        if lugar in frase:
             lugares_encontrados.append(lugar)
     return lugares_encontrados
 
 @app.get("/asistente")
 def procesar_voz(frase_usuario: str):
+    frase_usuario = frase_usuario.lower()
     lugares = encontrar_lugares_mencionados(frase_usuario)
+    
     origen = ""
     destino = ""
     
+    # Lógica de Origen/Destino
     if len(lugares) == 0:
-        return {"respuesta": "No reconocí el lugar. Intenta de nuevo."}
+        return {"respuesta": "No reconocí ningún lugar del mapa. Intenta de nuevo."}
+    
     elif len(lugares) == 1:
-        origen = "Entrada" # CAMBIA ESTO SI TU ENTRADA TIENE OTRO NOMBRE EN EXCEL
+        # ASUME QUE EL ORIGEN ES "entrada" (Debe existir en tu excel en minúscula)
+        origen = "entrada" 
         destino = lugares[0]
-        if destino.lower() == origen.lower():
-            return {"respuesta": "Ya estás en ese lugar."}
+        
+        # Si el usuario dice "estoy en la entrada", no hacemos nada
+        if destino == origen:
+             return {"respuesta": "Ya te encuentras en la entrada."}
+
     elif len(lugares) >= 2:
-        lugares.sort(key=lambda x: frase_usuario.lower().find(x.lower()))
+        # Ordenamos por aparición en la frase
+        lugares.sort(key=lambda x: frase_usuario.find(x))
         origen = lugares[0]
         destino = lugares[1]
 
+    print(f"🗺️ Buscando ruta de '{origen}' a '{destino}'")
+
     try:
         ruta = nx.shortest_path(edificio, source=origen, target=destino)
-        texto_respuesta = f"Ruta a {destino}:. " # El punto es clave para el modo copiloto
+        
+        # Construimos la respuesta hablada
+        texto_respuesta = f"Ruta a {destino}:. "
         
         for i in range(len(ruta) - 1):
-            datos = edificio[ruta[i]][ruta[i+1]]
-            texto = datos['instruccion']
+            nodo_A = ruta[i]
+            nodo_B = ruta[i+1]
+            datos = edificio[nodo_A][nodo_B]
+            
+            instruccion = datos['instruccion']
             alerta = datos['alerta']
             
-            segmento = texto
+            paso = instruccion
             if alerta != "Ninguna":
-                segmento += " Precaución: " + alerta
+                paso += " Precaución: " + alerta
             
-            texto_respuesta += segmento + ". "
+            texto_respuesta += paso + ". "
         
         return {"respuesta": texto_respuesta}
-    except:
-        return {"respuesta": f"No hay camino entre {origen} y {destino}."}
 
-# --- 3. HTML APP (MODO COPILOTO) ---
+    except nx.NetworkXNoPath:
+        return {"respuesta": f"Error de mapa: Los lugares existen, pero no están conectados entre sí. Revisa el Excel."}
+    except nx.NodeNotFound:
+        return {"respuesta": f"Error: No encuentro '{origen}' o '{destino}' en el mapa."}
+    except Exception as e:
+        return {"respuesta": f"Error técnico: {str(e)}"}
+
+# --- 3. HTML APP ---
+# (Mantén el mismo HTML de antes, no cambia)
 html_content = """
 <!DOCTYPE html>
 <html>
