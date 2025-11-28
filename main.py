@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 # --- 1. CARGA DE DATOS ---
-edificio = nx.DiGraph()
+edificio = nx.Graph()
 nombres_lugares = []
 
 # Intentamos leer el Excel. En Render, el archivo está en la misma carpeta.
